@@ -6,7 +6,6 @@ import json
 import re
 
 # === 設定 ===
-# GitHub Actions連携テスト
 LINE_TOKEN = os.environ['LINE_TOKEN']
 LINE_USER_ID = os.environ['LINE_USER_ID']
 USD_TO_JPY = 157.77
