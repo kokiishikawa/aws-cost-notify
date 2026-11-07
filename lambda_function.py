@@ -100,7 +100,7 @@ def reply_line_message(reply_token: str, message: str) -> None:
 
 def parse_message(user_message: str) -> tuple[str, str, str] | None:
     if "コスト" not in user_message:
-        return None  # ヘルプ扱い                                                                             
+        return None  # ヘルプ扱い
 
     today = datetime.now(JST)
 
