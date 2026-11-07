@@ -5,10 +5,14 @@ import os
 import json
 import re
 
+from aws_lambda_powertools import Logger
+
+logger = Logger(service="aws-cost-notify")
+
 # === 設定 ===
 LINE_TOKEN = os.environ['LINE_TOKEN']
 LINE_USER_ID = os.environ['LINE_USER_ID']
-USD_TO_JPY = 157.77
+USD_TO_JPY = 157.77  # 固定レート
 JST = timezone(timedelta(hours=9))
 SEPARATOR = "━━━━━━━━━━━━━━━"
 
@@ -36,7 +40,33 @@ def get_aws_cost(start: str, end: str) -> tuple[float, list[tuple[str, float]]]:
             total += amount
 
     costs.sort(key=lambda x: x[1], reverse=True)
+    logger.info(
+        "cost fetched",
+        extra={
+            "period_start": start,
+            "period_end": end,
+            "service_count": len(costs),
+            "total_usd": round(total, 2),
+        },
+    )
     return total, costs
+
+def log_line_result(api: str, response: requests.Response) -> None:
+    """LINE APIの結果をログに出す(400以上はERROR)"""
+    if response.status_code >= 400:
+        logger.error(
+            "LINE API error",
+            extra={
+                "line_api": api,
+                "line_status": response.status_code,
+                "line_response": response.text[:200],
+            },
+        )
+    else:
+        logger.info(
+            "LINE API ok",
+            extra={"line_api": api, "line_status": response.status_code},
+        )
 
 def send_line_message(message: str) -> None:
     """LINEにプッシュ通知"""
@@ -50,7 +80,7 @@ def send_line_message(message: str) -> None:
         'messages': [{'type': 'text', 'text': message}]
     }
     response = requests.post(url, headers=headers, json=payload)
-    print(f"LINE送信結果: {response.status_code}")
+    log_line_result("push", response)
 
 def periodic_notification() -> str:
     """定期通知用(実行時の当月コスト)"""
@@ -79,9 +109,7 @@ def format_line_message(total: float, costs: list[tuple[str, float]], label: str
     lines.append(SEPARATOR)
     lines.append(f"{datetime.now(JST).strftime('%Y/%m/%d')} 時点")
 
-    message = "\n".join(lines)
-    print(message)
-    return message
+    return "\n".join(lines)
 
 def reply_line_message(reply_token: str, message: str) -> None:
     """replyTokenを使ってメッセージ送信"""
@@ -96,7 +124,7 @@ def reply_line_message(reply_token: str, message: str) -> None:
         'messages': [{'type': 'text', 'text': message}]
     }
     response = requests.post(url, headers=headers, json=payload)
-    print(f"LINE送信結果: {response.status_code}")
+    log_line_result("reply", response)
 
 def parse_message(user_message: str) -> tuple[str, str, str] | None:
     if "コスト" not in user_message:
@@ -127,7 +155,13 @@ def parse_message(user_message: str) -> tuple[str, str, str] | None:
 
     return (start, end, label)
 
+@logger.inject_lambda_context(log_event=False, clear_state=True)
 def lambda_handler(event, context):
+    # 実行元の判定: LINE Webhook(API Gateway)か、定期実行(Scheduler)か
+    trigger_source = "line_webhook" if 'events' in event else "scheduler"
+    logger.append_keys(trigger_source=trigger_source)
+    logger.info("invocation start")
+
     if 'events' in event:
         for ev in event['events']:
             if ev['type'] == 'message' and ev['message']['type'] == 'text':
@@ -135,9 +169,11 @@ def lambda_handler(event, context):
                 reply_token = ev['replyToken']
                 result = parse_message(user_message)
                 if result is None:
+                    logger.info("help reply")
                     reply_line_message(reply_token, '「コスト」を含むメッセージを送ってください')
                 else:
                     start, end, label = result
+                    logger.info("command parsed", extra={"label": label})
                     total, costs = get_aws_cost(start, end)
                     message = format_line_message(total, costs, label)
                     reply_line_message(reply_token, message)
@@ -148,5 +184,3 @@ def lambda_handler(event, context):
         }
     else:
         send_line_message(periodic_notification())
-
-
